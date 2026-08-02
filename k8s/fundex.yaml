@@ -1,0 +1,406 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fundex-config
+data:
+  DB_HOST: mysql
+  DB_PORT: "3306"
+  DB_NAME: auth
+  DB_USER: authuser
+  MONGO_URI: mongodb://mongo:27017/fund
+  REDIS_URL: redis://redis:6379/0
+  PROVIDER_URL: http://ganache:8545
+  BLOCKCHAIN_ENABLED: "true"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: fundex-secret
+type: Opaque
+stringData:
+  DB_PASSWORD: authpass
+  JWT_SECRET_KEY: super-secret-key-change-in-production
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-root-secret
+type: Opaque
+stringData:
+  MYSQL_ROOT_PASSWORD: rootpass
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mysql-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mysql-root-secret
+                  key: MYSQL_ROOT_PASSWORD
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: fundex-secret
+                  key: DB_PASSWORD
+            - name: MYSQL_DATABASE
+              valueFrom:
+                configMapKeyRef:
+                  name: fundex-config
+                  key: DB_NAME
+            - name: MYSQL_USER
+              valueFrom:
+                configMapKeyRef:
+                  name: fundex-config
+                  key: DB_USER
+          volumeMounts:
+            - name: mysql-storage
+              mountPath: /var/lib/mysql
+      volumes:
+        - name: mysql-storage
+          persistentVolumeClaim:
+            claimName: mysql-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+        - name: mongo
+          image: mongo:7
+          ports:
+            - containerPort: 27017
+          volumeMounts:
+            - name: mongo-storage
+              mountPath: /data/db
+      volumes:
+        - name: mongo-storage
+          persistentVolumeClaim:
+            claimName: mongo-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo
+spec:
+  selector:
+    app: mongo
+  ports:
+    - port: 27017
+      targetPort: 27017
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ganache
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ganache
+  template:
+    metadata:
+      labels:
+        app: ganache
+    spec:
+      containers:
+        - name: ganache
+          image: trufflesuite/ganache:latest
+          args:
+            - --chain.hardfork
+            - muirGlacier
+            - --server.host
+            - 0.0.0.0
+          ports:
+            - containerPort: 8545
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ganache
+spec:
+  type: NodePort
+  selector:
+    app: ganache
+  ports:
+    - port: 8545
+      targetPort: 8545
+      nodePort: 30003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authentication
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: authentication
+  template:
+    metadata:
+      labels:
+        app: authentication
+    spec:
+      initContainers:
+        - name: wait-for-dependencies
+          image: auth-service:1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: fundex-config
+          command:
+            - python
+            - -c
+            - |
+              import os, socket, time
+              target = (os.environ["DB_HOST"], int(os.environ["DB_PORT"]))
+              print("waiting for %s:%s" % target, flush=True)
+              while True:
+                  try:
+                      socket.create_connection(target, 2).close()
+                      break
+                  except OSError:
+                      time.sleep(2)
+              print("ready", flush=True)
+      containers:
+        - name: authentication
+          image: auth-service:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5000
+          envFrom:
+            - configMapRef:
+                name: fundex-config
+            - secretRef:
+                name: fundex-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authentication
+spec:
+  type: NodePort
+  selector:
+    app: authentication
+  ports:
+    - port: 5000
+      targetPort: 5000
+      nodePort: 30000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: employee
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: employee
+  template:
+    metadata:
+      labels:
+        app: employee
+    spec:
+      initContainers:
+        - name: wait-for-dependencies
+          image: employee-service:1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: fundex-config
+          command:
+            - python
+            - -c
+            - |
+              import os, socket, time
+              from urllib.parse import urlparse
+              for variable in ("MONGO_URI", "REDIS_URL"):
+                  url = urlparse(os.environ[variable])
+                  print("waiting for %s:%s" % (url.hostname, url.port), flush=True)
+                  while True:
+                      try:
+                          socket.create_connection((url.hostname, url.port), 2).close()
+                          break
+                      except OSError:
+                          time.sleep(2)
+              print("ready", flush=True)
+      containers:
+        - name: employee
+          image: employee-service:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5001
+          envFrom:
+            - configMapRef:
+                name: fundex-config
+            - secretRef:
+                name: fundex-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: employee
+spec:
+  type: NodePort
+  selector:
+    app: employee
+  ports:
+    - port: 5001
+      targetPort: 5001
+      nodePort: 30001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: director
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: director
+  template:
+    metadata:
+      labels:
+        app: director
+    spec:
+      initContainers:
+        - name: wait-for-dependencies
+          image: director-service:1.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef:
+                name: fundex-config
+          command:
+            - python
+            - -c
+            - |
+              import os, socket, time
+              from urllib.parse import urlparse
+              for variable in ("MONGO_URI", "REDIS_URL", "PROVIDER_URL"):
+                  url = urlparse(os.environ[variable])
+                  print("waiting for %s:%s" % (url.hostname, url.port), flush=True)
+                  while True:
+                      try:
+                          socket.create_connection((url.hostname, url.port), 2).close()
+                          break
+                      except OSError:
+                          time.sleep(2)
+              print("ready", flush=True)
+      containers:
+        - name: director
+          image: director-service:1.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5002
+          envFrom:
+            - configMapRef:
+                name: fundex-config
+            - secretRef:
+                name: fundex-secret
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: director
+spec:
+  type: NodePort
+  selector:
+    app: director
+  ports:
+    - port: 5002
+      targetPort: 5002
+      nodePort: 30002
