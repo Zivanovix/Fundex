@@ -12,6 +12,16 @@ REGISTER_FIELDS = ["forename", "surname", "email", "password"]
 LOGIN_FIELDS = ["email", "password"]
 
 
+def _is_valid_email(email):
+    try:
+        validate_email(email, check_deliverability=False)
+    except EmailNotValidError:
+        return False
+
+    domain = email.rsplit("@", 1)[-1]
+    return len(domain.rsplit(".", 1)[-1]) >= 2
+
+
 @auth_bp.route("/register", methods=["POST"])
 def register():
     data = request.get_json(silent=True) or {}
@@ -26,9 +36,7 @@ def register():
     email = data["email"]
     password = data["password"]
 
-    try:
-        validate_email(email, check_deliverability=False)
-    except EmailNotValidError:
+    if not _is_valid_email(email):
         return jsonify({"message": "Invalid email."}), 400
 
     if len(password) < 8:
@@ -62,9 +70,7 @@ def login():
     email = data["email"]
     password = data["password"]
 
-    try:
-        validate_email(email, check_deliverability=False)
-    except EmailNotValidError:
+    if not _is_valid_email(email):
         return jsonify({"message": "Invalid email."}), 400
 
     user = User.query.filter_by(email=email).first()
