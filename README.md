@@ -107,11 +107,36 @@ grader-venv/bin/pip install "setuptools<81"
 Bez toga grejder puca sa `ModuleNotFoundError: No module named 'pkg_resources'`,
 jer njegov `web3==6.5.0` koristi paket koji je izbačen iz novijih Python verzija.
 
-### Puna provera — autentifikacija i blockchain
+### Pokretanje
+
+```bash
+./test.sh --reset
+```
+
+Očekivano: **179.00 / 179.00 (100%)**, 98 testova prošlo.
+
+Skripta sama radi sve što treba: sačeka da svih 9 podova bude spremno, po potrebi
+prebaci režim rada, obriše podatke iz prethodnog prolaza, i pozove grejder sa
+tačnim argumentima.
+
+| Poziv | Šta radi |
+|---|---|
+| `./test.sh` | pokreće testove nad zatečenim stanjem |
+| `./test.sh --reset` | prvo obriše podatke, pa pokrene — **ovo koristi obično** |
+| `./test.sh --reset --no-blockchain` | isto, ali u režimu bez glasanja (očekivano 180.00 / 180.00) |
+
+`--reset` je gotovo uvek potreban jer je grejder stateful — ostavlja imovinu u
+bazi, a prvi test pretrage očekuje da je baza prazna.
+
+### Zašto se ne poziva `pytest` direktno
+
+Može, ali zahteva podugačku komandu, jer grejder nije deo sistema — izvršava se
+van klastera i ne može da pročita našu konfiguraciju, pa mu se sve mora reći
+kroz argumente:
 
 ```bash
 cd iep_grader
-../grader-venv/bin/python -m pytest -q --type all \
+../grader-venv/bin/python -m pytest -q --type all --wait-for-services \
   --authentication-url http://127.0.0.1:30000 \
   --jwt-secret super-secret-key-change-in-production \
   --roles-field role --employee-role employee --director-role director \
@@ -122,30 +147,14 @@ cd iep_grader
   --grade-report-file grade_report.json
 ```
 
-Očekivano: **179.00 / 179.00 (100%)**, 98 testova prošlo.
+`--jwt-secret` mu treba da bi sam dekodovao token i proverio njegov sadržaj, a
+`--roles-field` i `--*-role` zato što specifikacija ne propisuje kako se polje
+sa ulogom zove — to je bio naš izbor.
 
-### Bez blockchain-a
-
-Sistem podržava i rad bez glasanja. Prebacivanje:
-
-```bash
-kubectl patch configmap fundex-config -p '{"data":{"BLOCKCHAIN_ENABLED":"false"}}'
-kubectl rollout restart deployment/director
-```
-
-pa isti poziv grejdera **bez** `--with-blockchain` i `--provider-url`.
-Očekivano: **180.00 / 180.00 (100%)**.
-
-Povratak na glasanje:
-
-```bash
-kubectl apply -f k8s/fundex.yaml
-kubectl rollout restart deployment/director
-```
-
-> **Važno:** grejder je stateful — ostavlja imovinu u bazi. Pre svakog novog
-> punog prolaza obriši podatke (vidi „Potpuni reset" ispod), inače će prvi test
-> pretrage pasti jer očekuje praznu bazu.
+> **Napomena:** `--reset` briše sadržaj baza **u mestu**, umesto da ruši i ponovo
+> diže servise. Rušenje svih Service objekata tera CoreDNS da iznova učita
+> zapise, a dok to traje imena poput `mongo` mogu nakratko da se ne razreše
+> unutar podova, što obara pokoji test bez ikakve veze sa ispravnošću koda.
 
 ---
 
@@ -157,7 +166,9 @@ kubectl rollout restart deployment/director
 kubectl delete deployment --all
 ```
 
-**Potpuni reset** (briše i sadržaj baza — ovo treba pre ponovnog puštanja grejdera):
+**Brisanje podataka** pred novi prolaz grejdera — radi `./test.sh --reset`, ne treba ništa ručno.
+
+**Potpuno rušenje i ponovno dizanje** (retko potrebno):
 
 ```bash
 kubectl delete -f k8s/fundex.yaml
@@ -195,7 +206,8 @@ kubectl rollout restart deployment/director
 | Pod stoji u `Init:0/1` duže od minut | baza se još diže; vidi na šta čeka sa `kubectl logs <pod> -c wait-for-dependencies` |
 | `Connection refused` na portu 30000 | podovi još nisu spremni, proveri `kubectl get pods` |
 | Grejder: `No module named 'pkg_resources'` | `grader-venv/bin/pip install "setuptools<81"` |
-| Grejder: prvi test pretrage pada | baza nije prazna — uradi potpuni reset |
+| Grejder: prvi test pretrage pada | baza nije prazna — pokreni `./test.sh --reset` |
+| Grejder: `Name or service not known` u logovima | prolazni CoreDNS problem posle rušenja servisa; pokreni ponovo sa `./test.sh --reset` |
 | Blockchain testovi padaju na finansiranju glasača | Ganache mora imati `--chain.hardfork muirGlacier` (već je u manifestu) |
 
 Korisne komande:
@@ -231,4 +243,7 @@ grader-venv/bin/pip install -r iep_grader/requirements-pytest.txt "setuptools<81
 
 # 3. od ovog trenutka sve radi bez interneta
 kubectl apply -f k8s/fundex.yaml
+
+# 4. provera da sve radi
+./test.sh --reset
 ```
