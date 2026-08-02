@@ -6,3 +6,6 @@ class Config:
     REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
 
     JWT_SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "change-me")
+
+    BLOCKCHAIN_ENABLED = os.environ.get("BLOCKCHAIN_ENABLED", "false").lower() == "true"
+    PROVIDER_URL = os.environ.get("PROVIDER_URL", "http://localhost:8545")
